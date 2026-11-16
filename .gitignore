@@ -2,6 +2,7 @@ Build
 Build.bat
 /build/
 /build2022/
+/package-work/
 deps/build
 MYMETA.json
 MYMETA.yml

@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.bambulab.BambuStudio</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0-only</project_license>
+
+  <name>BambuStudio</name>
+  <summary>Slicing software for Bambu Lab 3D printers</summary>
+  <description>
+    <p>
+      Bambu Studio is a feature-rich slicing application for Bambu Lab 3D
+      printers, based on PrusaSlicer. It offers project-based workflows,
+      systematically optimized slicing algorithms, an easy-to-use graphical
+      interface, multiple plates, hybrid/tree supports, multi-material
+      printing and remote printer control.
+    </p>
+    <p>
+      Printing via SD card works out of the box; the optional non-free Bambu
+      networking plugin is not included in this package.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">BambuStudio.desktop</launchable>
+
+  <provides>
+    <binary>bambu-studio</binary>
+    <mediatype>model/stl</mediatype>
+    <mediatype>model/3mf</mediatype>
+    <mediatype>application/vnd.ms-3mfdocument</mediatype>
+    <mediatype>application/prs.wavefront-obj</mediatype>
+    <mediatype>application/x-amf</mediatype>
+    <mediatype>model/step</mediatype>
+  </provides>
+
+  <categories>
+    <category>Graphics</category>
+    <category>Engineering</category>
+  </categories>
+
+  <developer id="com.bambulab">
+    <name>Bambu Lab</name>
+    <url>https://www.bambulab.com</url>
+  </developer>
+  <content_rating type="oars-1.1"/>
+
+  <url type="homepage">https://github.com/bambulab/BambuStudio</url>
+  <url type="bugtracker">https://github.com/bambulab/BambuStudio/issues</url>
+
+  <releases>
+    <release version="@VERSION@" date="@DATE@">
+      <description>
+        <p>Native Ubuntu package of upstream BambuStudio @VERSION@.</p>
+      </description>
+    </release>
+  </releases>
+</component>

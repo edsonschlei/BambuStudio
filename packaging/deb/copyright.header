@@ -1,0 +1,18 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: BambuStudio
+Source: https://github.com/bambulab/BambuStudio
+
+Files: *
+Copyright: 2022-2026 Bambu Lab, Prusa Research and the Slic3r contributors
+License: AGPL-3+
+ Bambu Studio is free software: you can redistribute it and/or modify it under
+ the terms of the GNU Affero General Public License as published by the Free
+ Software Foundation, either version 3 of the License, or (at your option) any
+ later version.
+ .
+ Bambu Studio is distributed in the hope that it will be useful, but WITHOUT
+ ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+ details.
+ .
+ The full text of the GNU Affero General Public License version 3 follows.

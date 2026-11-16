@@ -1,0 +1,18 @@
+Package: bambustudio
+Version: @VERSION@
+Architecture: @ARCH@
+Maintainer: @MAINTAINER@
+Homepage: https://github.com/bambulab/BambuStudio
+Source: bambustudio
+Section: graphics
+Priority: optional
+Depends: @DEPENDS@
+Recommends: gstreamer1.0-libav
+Description: Slicing software for Bambu Lab 3D printers
+ Bambu Studio is a cutting-edge, feature-rich slicing application based on
+ PrusaSlicer. It provides project-based workflows, systematically optimized
+ slicing algorithms, an easy-to-use graphical interface, multiple plates,
+ hybrid/tree supports, multi-material printing and remote printer control.
+ .
+ Printing through an SD card works out of the box. The optional non-free
+ Bambu networking plugin is not included in this package.
