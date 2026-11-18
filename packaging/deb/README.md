@@ -20,7 +20,7 @@ sudo apt-get install -y \
   libgl1-mesa-dev libglu1-mesa-dev libosmesa6-dev libcairo2-dev \
   libgtk-3-dev libsoup2.4-dev libwebkit2gtk-4.1-dev \
   libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-  libgstreamer-plugins-good1.0-dev gstreamer1.0-plugins-bad \
+  gstreamer1.0-plugins-bad \
   libsecret-1-dev libdbus-1-dev libudev-dev libglew-dev libmspack-dev \
   libssl-dev libcurl4-openssl-dev libunwind-dev libx264-dev libbz2-dev \
   nasm yasm fakeroot dpkg-dev lintian desktop-file-utils appstream
@@ -28,6 +28,11 @@ sudo apt-get install -y \
 # Build both packages:
 ./packaging/deb/build_deb.sh
 ```
+
+Note: `libgstreamer-plugins-good1.0-dev`, listed in the upstream wiki, is not
+available in Ubuntu 26.04 and is not required to build BambuStudio. Only the
+runtime plugin package `gstreamer1.0-plugins-bad` is needed (for printer
+liveview).
 
 Useful options:
 
@@ -38,6 +43,7 @@ Useful options:
 | `--version VER` | Override the derived Debian version |
 | `--maintainer STR` | Override the `Maintainer` field |
 | `--skip-deps` | Reuse a previous dependency build |
+| `--skip-build` | Skip configure/compile; re-stage and re-package from an existing build tree (fast iteration on packaging changes) |
 | `--skip-checks` | Skip RAM/disk preflight warnings |
 | `--clean` | Delete the work directory first |
 

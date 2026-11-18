@@ -25,6 +25,7 @@ ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 WORK="${WORK:-$ROOT/package-work}"
 JOBS="${JOBS:-$(nproc)}"
 SKIP_DEPS=0
+SKIP_BUILD=0
 SKIP_CHECKS=0
 CLEAN=0
 VERSION_OVERRIDE=""
@@ -40,6 +41,8 @@ Options:
   --version VER      Override the Debian version (default: derived from version.inc)
   --maintainer STR   Debian maintainer field
   --skip-deps        Reuse an existing dependency build in WORK/deps-destdir
+  --skip-build       Reuse an existing build tree; skip configure/compile but
+                     still re-stage and re-package (fast iteration)
   --skip-checks      Skip memory/disk preflight checks
   --clean            Remove WORK before starting
   -h, --help         Show this help
@@ -58,6 +61,7 @@ while (($#)); do
         --version)     VERSION_OVERRIDE="$2"; shift 2 ;;
         --maintainer)  MAINTAINER="$2"; shift 2 ;;
         --skip-deps)   SKIP_DEPS=1; shift ;;
+        --skip-build)  SKIP_BUILD=1; SKIP_DEPS=1; shift ;;
         --skip-checks) SKIP_CHECKS=1; shift ;;
         --clean)       CLEAN=1; shift ;;
         -h|--help)     usage; exit 0 ;;
@@ -123,54 +127,61 @@ log "Target:           Ubuntu $VERSION_ID ($VERSION_CODENAME), $ARCH/$TRIPLET"
 log "Work directory:   $WORK"
 
 # ---------------------------------------------------------------------------
-# 1. Update submodules if needed
+# 1-3. Build dependencies and BambuStudio (skipped with --skip-build)
 # ---------------------------------------------------------------------------
-if [[ ! -d "$ROOT/resources/profiles/BBL" ]]; then
-    log "Fetching git submodules (resources/profiles)"
-    git -C "$ROOT" submodule update --init --recursive
+if ((SKIP_BUILD)); then
+    [[ -f "$WORK/build/build.ninja" ]] || die "--skip-build requires an existing build tree at $WORK/build"
+    log "Skipping configure/compile (--skip-build); re-staging from existing build tree"
 else
-    log "Submodules already present"
-fi
+    # 1. Update submodules if needed
+    if [[ ! -d "$ROOT/resources/profiles/BBL" ]]; then
+        log "Fetching git submodules (resources/profiles)"
+        git -C "$ROOT" submodule update --init --recursive
+    else
+        log "Submodules already present"
+    fi
 
-# ---------------------------------------------------------------------------
-# 2. Build bundled dependencies
-# ---------------------------------------------------------------------------
-DEPS_PREFIX="$WORK/deps-destdir/usr/local"
-if ((SKIP_DEPS)); then
-    [[ -d "$DEPS_PREFIX" ]] || die "--skip-deps given but $DEPS_PREFIX does not exist"
-    log "Reusing dependencies at $DEPS_PREFIX"
-else
-    log "Configuring dependencies"
-    cmake -S "$ROOT/deps" -B "$WORK/deps" -G Ninja \
+    # 2. Build bundled dependencies
+    DEPS_PREFIX="$WORK/deps-destdir/usr/local"
+    if ((SKIP_DEPS)); then
+        [[ -d "$DEPS_PREFIX" ]] || die "--skip-deps given but $DEPS_PREFIX does not exist"
+        log "Reusing dependencies at $DEPS_PREFIX"
+    else
+        log "Configuring dependencies"
+        cmake -S "$ROOT/deps" -B "$WORK/deps" -G Ninja \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DDESTDIR="$WORK/deps-destdir" \
+            -DDEP_WX_GTK3=ON
+        log "Building dependencies"
+        cmake --build "$WORK/deps" --parallel "$JOBS"
+    fi
+
+    # 3. Build BambuStudio with FHS layout
+    log "Configuring BambuStudio (FHS / native layout)"
+    cmake -S "$ROOT" -B "$WORK/build" -G Ninja \
         -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DDESTDIR="$WORK/deps-destdir" \
-        -DDEP_WX_GTK3=ON
-    log "Building dependencies"
-    cmake --build "$WORK/deps" --parallel "$JOBS"
+        -DCMAKE_PREFIX_PATH="$DEPS_PREFIX" \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DCMAKE_INSTALL_BINDIR="lib/$TRIPLET/bambu-studio" \
+        -DSLIC3R_STATIC=ON \
+        -DSLIC3R_GTK=3 \
+        -DSLIC3R_FHS=ON \
+        -DBBL_RELEASE_TO_PUBLIC=1 \
+        -DBBL_INTERNAL_TESTING=0 \
+        -DCMAKE_BUILD_TYPE=Release
+
+    BIN="$WORK/build/src/bambu-studio"
+    # Older revisions stripped the build tree in place. Force a relink if so.
+    if [[ -e "$BIN" ]] && readelf -S "$BIN" 2>/dev/null | grep -q '\.gnu_debuglink'; then
+        log "Build-tree binary was stripped by an earlier run; forcing a relink"
+        rm -f "$BIN"
+    fi
+
+    log "Building BambuStudio"
+    cmake --build "$WORK/build" --target BambuStudio --parallel "$JOBS"
+    [[ -x "$BIN" ]] || die "Expected binary $BIN was not produced"
 fi
-
-# ---------------------------------------------------------------------------
-# 3. Build BambuStudio with FHS layout
-# ---------------------------------------------------------------------------
-log "Configuring BambuStudio (FHS / native layout)"
-cmake -S "$ROOT" -B "$WORK/build" -G Ninja \
-    -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-    -DCMAKE_PREFIX_PATH="$DEPS_PREFIX" \
-    -DCMAKE_INSTALL_PREFIX=/usr \
-    -DCMAKE_INSTALL_BINDIR="lib/$TRIPLET/bambu-studio" \
-    -DSLIC3R_STATIC=ON \
-    -DSLIC3R_GTK=3 \
-    -DSLIC3R_FHS=ON \
-    -DBBL_RELEASE_TO_PUBLIC=1 \
-    -DBBL_INTERNAL_TESTING=0 \
-    -DCMAKE_BUILD_TYPE=Release
-
-log "Building BambuStudio"
-cmake --build "$WORK/build" --target BambuStudio --parallel "$JOBS"
-
-BIN="$WORK/build/src/bambu-studio"
-[[ -x "$BIN" ]] || die "Expected binary $BIN was not produced"
 
 # The FFmpeg shared libraries are copied into the build tree at configure time
 # by bambustudio_copy_sos(). Fail early if that upstream behaviour changed.
@@ -180,12 +191,56 @@ for lib in "${FFMPEG_LIBS[@]}"; do
 done
 
 # ---------------------------------------------------------------------------
-# 4. Split detached debug symbols (before staging the stripped binaries)
+# 4. Stage the FHS install
 # ---------------------------------------------------------------------------
+STAGE="$WORK/stage"
+rm -rf "$STAGE"
+log "Staging install into $STAGE"
+DESTDIR="$STAGE" cmake --install "$WORK/build"
+
+# Upstream's mcut install rules drop these at /usr; they are redundant (and
+# trigger lintian file-in-unusual-dir), so remove them from the package.
+rm -f "$STAGE/usr/LICENSE.txt" "$STAGE/usr/README.md"
+
+PRIV_LIBDIR="$STAGE/usr/lib/$TRIPLET/bambu-studio"
+mkdir -p "$PRIV_LIBDIR"
+
+# Upstream installs the bundled FFmpeg libraries to ${prefix}/bin (/usr/bin),
+# which is not acceptable for a native package. Move them next to the binary
+# so the $ORIGIN RPATH resolves them.
+shopt -s nullglob
+av_libs=("$STAGE"/usr/bin/libavcodec.so* "$STAGE"/usr/bin/libavutil.so* \
+         "$STAGE"/usr/bin/libswresample.so* "$STAGE"/usr/bin/libswscale.so*)
+shopt -u nullglob
+((${#av_libs[@]})) || die "No FFmpeg libraries found in $STAGE/usr/bin - install layout changed"
+mv -- "${av_libs[@]}" "$PRIV_LIBDIR/"
+
+# ---------------------------------------------------------------------------
+# 5. Split detached debug symbols
+# ---------------------------------------------------------------------------
+# Split from COPIES of the *installed* files: CMake rewrites the binary's
+# RUNPATH to $ORIGIN during install, which a build-tree copy does not have.
+# Working on copies also keeps the build tree reusable across runs.
 DBGSTAGE="$WORK/dbgstage"
-rm -rf "$DBGSTAGE"
+SYM_DIR="$WORK/symbols"
+rm -rf "$DBGSTAGE" "$SYM_DIR"
+mkdir -p "$SYM_DIR"
 DEBUG_OUTPUT="$DBGSTAGE/usr/lib/debug"
 BID_LIST=""
+STRIPPED_LIBS=()
+
+cp -a "$PRIV_LIBDIR/bambu-studio" "$SYM_DIR/bambu-studio"
+
+# Only the real versioned FFmpeg files (not their SONAME symlinks) need
+# stripping; the symlinks in the staged package keep pointing at them.
+for lib in "$PRIV_LIBDIR"/libav*.so.* "$PRIV_LIBDIR"/libsw*.so.*; do
+    [[ -f "$lib" && ! -L "$lib" ]] || continue
+    if readelf -S "$lib" 2>/dev/null | grep -q '\.debug_info' \
+       && readelf -n "$lib" 2>/dev/null | grep -q 'Build ID:'; then
+        cp -a "$lib" "$SYM_DIR/"
+        STRIPPED_LIBS+=("$(basename "$lib")")
+    fi
+done
 
 split_debug() {
     local file="$1" rel="$2" bid out_dir link_dir link_target
@@ -197,7 +252,9 @@ split_debug() {
     (
         cd "$DEBUG_OUTPUT"
         objcopy --only-keep-debug "$file" "$rel.debug"
-        objcopy --strip-debug "$file"
+        # --strip-unneeded also drops .symtab (lintian's unstripped-binary check)
+        # while keeping .note.gnu.build-id and the dynamic symbol table.
+        strip --strip-unneeded "$file"
         objcopy --add-gnu-debuglink="$rel.debug" "$file"
     )
 
@@ -213,37 +270,17 @@ split_debug() {
 }
 
 log "Splitting debug symbols"
-split_debug "$BIN" "usr/lib/$TRIPLET/bambu-studio/bambu-studio"
-for lib in "$WORK"/build/src/libav*.so.*; do
-    [[ -e "$lib" ]] || continue
-    # Only split libraries that actually carry debug info and a build-id,
-    # otherwise gdb could not locate the detached file after installation.
-    if readelf -S "$lib" 2>/dev/null | grep -q '\.debug_info' \
-       && readelf -n "$lib" 2>/dev/null | grep -q 'Build ID:'; then
-        split_debug "$lib" "usr/lib/$TRIPLET/bambu-studio/$(basename "$lib")"
-    fi
+split_debug "$SYM_DIR/bambu-studio" "usr/lib/$TRIPLET/bambu-studio/bambu-studio"
+for name in "${STRIPPED_LIBS[@]}"; do
+    split_debug "$SYM_DIR/$name" "usr/lib/$TRIPLET/bambu-studio/$name"
 done
+find "$DBGSTAGE/usr/lib/debug" -type f -exec chmod 644 {} +
 
-# ---------------------------------------------------------------------------
-# 5. Stage the FHS install
-# ---------------------------------------------------------------------------
-STAGE="$WORK/stage"
-rm -rf "$STAGE"
-log "Staging install into $STAGE"
-DESTDIR="$STAGE" cmake --install "$WORK/build"
-
-PRIV_LIBDIR="$STAGE/usr/lib/$TRIPLET/bambu-studio"
-mkdir -p "$PRIV_LIBDIR"
-
-# Upstream installs the bundled FFmpeg libraries to ${prefix}/bin (/usr/bin),
-# which is not acceptable for a native package. Move them next to the binary
-# so the $ORIGIN RPATH resolves them.
-shopt -s nullglob
-av_libs=("$STAGE"/usr/bin/libavcodec.so* "$STAGE"/usr/bin/libavutil.so* \
-         "$STAGE"/usr/bin/libswresample.so* "$STAGE"/usr/bin/libswscale.so*)
-shopt -u nullglob
-((${#av_libs[@]})) || die "No FFmpeg libraries found in $STAGE/usr/bin - install layout changed"
-mv -- "${av_libs[@]}" "$PRIV_LIBDIR/"
+# Swap in the stripped copies (objcopy preserves the installed $ORIGIN RUNPATH).
+cp -a "$SYM_DIR/bambu-studio" "$PRIV_LIBDIR/bambu-studio"
+for name in "${STRIPPED_LIBS[@]}"; do
+    cp -a "$SYM_DIR/$name" "$PRIV_LIBDIR/$name"
+done
 
 [[ -x "$PRIV_LIBDIR/bambu-studio" ]] || die "Binary was not installed to $PRIV_LIBDIR"
 
@@ -297,9 +334,11 @@ install -d "$STAGE/usr/share/doc/bambustudio"
 # ---------------------------------------------------------------------------
 log "Computing runtime dependencies with dpkg-shlibdeps"
 SHLIB_DIR="$WORK/shlibdeps"
+SHLIB_ROOT="$SHLIB_DIR/bambustudio"
+SHLIB_REL="bambustudio/usr/lib/$TRIPLET/bambu-studio"
 rm -rf "$SHLIB_DIR"
-mkdir -p "$SHLIB_DIR/debian"
-SHLIB_BIN="$SHLIB_DIR/bambustudio/usr/lib/$TRIPLET/bambu-studio"
+mkdir -p "$SHLIB_ROOT/DEBIAN" "$SHLIB_DIR/debian"
+SHLIB_BIN="$SHLIB_ROOT/usr/lib/$TRIPLET/bambu-studio"
 mkdir -p "$SHLIB_BIN"
 cat > "$SHLIB_DIR/debian/control" <<EOF
 Source: bambustudio
@@ -315,12 +354,31 @@ Description: placeholder
  placeholder
 EOF
 cp "$PRIV_LIBDIR/bambu-studio" "$SHLIB_BIN/"
-cp "$PRIV_LIBDIR"/libav*.so* "$SHLIB_BIN/" 2>/dev/null || true
+cp "$PRIV_LIBDIR"/libav*.so* "$PRIV_LIBDIR"/libsw*.so* "$SHLIB_BIN/" 2>/dev/null || true
 
-SHLIBS="$(cd "$SHLIB_DIR" && dpkg-shlibdeps -O --ignore-missing-info \
-    bambustudio/usr/lib/$TRIPLET/bambu-studio/* 2>"$WORK/shlibdeps.log" \
-    | sed -n 's/^shlibs:Depends=//p')"
-[[ -n "$SHLIBS" ]] || { cat "$WORK/shlibdeps.log" >&2; die "dpkg-shlibdeps produced no dependencies"; }
+# The uppercase DEBIAN directory marks the package root so dpkg-shlibdeps can
+# resolve "$ORIGIN" in the binary's RPATH. -l adds that same private libdir so
+# the bundled FFmpeg libraries (which have no RPATH themselves) can resolve
+# each other. Without both, dpkg-shlibdeps reports spurious "cannot find
+# library libav*.so.*" errors.
+RAW_LOG="$WORK/shlibdeps.raw.log"
+if ! SHLIBS="$(cd "$SHLIB_DIR" && dpkg-shlibdeps -O --ignore-missing-info \
+        -l"$SHLIB_REL" "$SHLIB_REL/bambu-studio" \
+        "$SHLIB_REL"/libav*.so* "$SHLIB_REL"/libsw*.so* \
+        2>"$RAW_LOG" | sed -n 's/^shlibs:Depends=//p')"; then
+    cat "$RAW_LOG" >&2
+    die "dpkg-shlibdeps failed"
+fi
+
+# The libc6 usrmerge diversion warnings are unavoidable on modern Ubuntu.
+# Strip only those and fail on anything else, so real problems are not hidden.
+grep -vE 'diversions involved|diversion by libc6' "$RAW_LOG" \
+    | grep -v '^[[:space:]]*$' > "$WORK/shlibdeps.log" || true
+if grep -qE 'error:|warning:' "$WORK/shlibdeps.log"; then
+    cat "$WORK/shlibdeps.log" >&2
+    die "dpkg-shlibdeps reported unresolved problems (see above)"
+fi
+[[ -n "$SHLIBS" ]] || die "dpkg-shlibdeps produced no dependencies"
 
 # Libraries that are dlopen()ed at runtime are invisible to dpkg-shlibdeps.
 # Names below are the runtime package names on Ubuntu 26.04 (resolute).
@@ -401,7 +459,8 @@ EOF
 # 9. Normalise permissions and build the packages
 # ---------------------------------------------------------------------------
 find "$STAGE" -type d -exec chmod 755 {} +
-find "$STAGE/DEBIAN" -type f -exec chmod 644 {} +
+# Only the control file is 0644; maintainer scripts must remain executable.
+chmod 644 "$STAGE/DEBIAN/control"
 find "$STAGE/usr/share" -type f -exec chmod 644 {} +
 chmod 755 "$STAGE/usr/bin/bambu-studio" "$PRIV_LIBDIR/bambu-studio"
 
