@@ -25,7 +25,10 @@ deps/build-linux/*
 install_*
 build_*/
 SVG
-doc/
+/doc/
+!/doc/
+/doc/*
+!/doc/DEPENDENCIES.md
 **/process_full/
 **/machine_full/
 **/filament_full/
