@@ -1066,7 +1066,11 @@ wxWebView *WebView::CreateWebView(wxWindow *parent, wxString const &url, wxStrin
 
             Slic3r::GUI::wxGetApp().set_adding_script_handler(false);
         };
-#ifndef __WIN32__
+        // Defer on every platform, not just non-Windows. On Windows the previous
+        // synchronous path ran AddScriptMessageHandler() during WebView creation and
+        // pumped nested event loops (RunScriptSync -> wxYieldFor), which contributed
+        // to the OS "not responding" dialog during startup. The lifetime guard and
+        // delayed-view drain below make the deferred path safe everywhere.
         webView->CallAfter([webView, addScriptMessageHandler] {
             // This async callback may fire after webView has already been destroyed,
             // which would call AddScriptMessageHandler() on a dangling pointer
@@ -1076,7 +1080,6 @@ wxWebView *WebView::CreateWebView(wxWindow *parent, wxString const &url, wxStrin
             // See bambulab/BambuStudio #11004 and #10968.
             if (std::find(g_webviews.begin(), g_webviews.end(), webView) == g_webviews.end())
                 return;
-#endif
             if (Slic3r::GUI::wxGetApp().is_adding_script_handler()) {
                 g_delay_webviews.push_back(webView);
             } else {
@@ -1095,9 +1098,7 @@ wxWebView *WebView::CreateWebView(wxWindow *parent, wxString const &url, wxStrin
                     addScriptMessageHandler(wv);
                 }
             }
-#ifndef __WIN32__
         });
-#endif
         const bool enable_devtools = Slic3r::GUI::wxGetApp().app_config && Slic3r::GUI::wxGetApp().app_config->get("enable_webview_devtools") == "true";
         webView->EnableContextMenu(enable_devtools);
         webView->EnableAccessToDevTools(enable_devtools);

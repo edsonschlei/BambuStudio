@@ -213,7 +213,8 @@ public:
     // Load selections (current print, current filaments, current printer) from config.ini
     // select preferred presets, if any exist
     std::pair<PresetsConfigSubstitutions, std::string> load_presets(AppConfig &config, ForwardCompatibilitySubstitutionRule rule,
-                                            const PresetPreferences& preferred_selection = PresetPreferences());
+                                            const PresetPreferences& preferred_selection = PresetPreferences(),
+                                            std::function<void()> progress_callback = nullptr);
 
     // Load selections (current print, current filaments, current printer) from config.ini
     // This is done just once on application start up.
@@ -553,7 +554,8 @@ public:
 private:
     //std::pair<PresetsConfigSubstitutions, std::string> load_system_presets(ForwardCompatibilitySubstitutionRule compatibility_rule);
     //BBS: add json related logic
-    std::pair<PresetsConfigSubstitutions, std::string> load_system_presets_from_json(ForwardCompatibilitySubstitutionRule compatibility_rule);
+    std::pair<PresetsConfigSubstitutions, std::string> load_system_presets_from_json(ForwardCompatibilitySubstitutionRule compatibility_rule,
+                                                                                    const std::function<void()>& progress_callback = nullptr);
     // Merge one vendor's presets with the other vendor's presets, report duplicates.
     std::vector<std::string>    merge_presets(PresetBundle &&other);
     // Update the multicolor information for filaments.

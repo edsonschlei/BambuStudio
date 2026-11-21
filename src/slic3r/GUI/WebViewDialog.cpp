@@ -122,23 +122,14 @@ WebViewPanel::WebViewPanel(wxWindow *parent)
 
      wxString UrlLeft  = wxString::Format("file://%s/web/homepage3/left.html", from_u8(resources_dir()));
      wxString UrlRight = wxString::Format("file://%s/web/homepage3/home.html", from_u8(resources_dir()));
-     wxString UrlWiki  = wxString::Format("file://%s/web/homepage3/wiki.html", from_u8(resources_dir()));
-     wxString wiki_region_param;
-    if (!m_Region.empty())
-        wiki_region_param = wxString::Format("region=%s", from_u8(m_Region));
-    if (!wiki_region_param.empty())
-        UrlWiki = wxString::Format("file://%s/web/homepage3/wiki.html?%s", from_u8(resources_dir()), wiki_region_param);
 
      wxString strlang = GetStudioLanguage();
     if (strlang != "")
     {
         UrlLeft = wxString::Format("file://%s/web/homepage3/left.html?lang=%s", from_u8(resources_dir()), strlang);
          UrlRight = wxString::Format("file://%s/web/homepage3/home.html?lang=%s", from_u8(resources_dir()), strlang);
-         if (!wiki_region_param.empty())
-             UrlWiki = wxString::Format("file://%s/web/homepage3/wiki.html?lang=%s&%s", from_u8(resources_dir()), strlang, wiki_region_param);
-         else
-             UrlWiki = wxString::Format("file://%s/web/homepage3/wiki.html?lang=%s", from_u8(resources_dir()), strlang);
      }
+    // The Wiki URL is built by ensure_wiki() when the Wiki page is first opened.
 
     topsizer = new wxBoxSizer(wxVERTICAL);
 
@@ -232,7 +223,7 @@ WebViewPanel::WebViewPanel(wxWindow *parent)
     //Create Webview Panel
     m_home_web = new wxBoxSizer(wxHORIZONTAL);
 
-    // LeftMenu webview
+    // LeftMenu webview - visible on the Home tab from startup, so keep it eager.
     m_leftfirst   = false;
     m_browserLeft = WebView::CreateWebView(this, UrlLeft, "LeftMenu");
     if (m_browserLeft == nullptr) {
@@ -243,60 +234,33 @@ WebViewPanel::WebViewPanel(wxWindow *parent)
     m_browserLeft->SetMinSize(wxSize(FromDIP(224), -1));
     m_browserLeft->SetMaxSize(wxSize(FromDIP(224), -1));
 
-    // Create the webview
+    // Create the webview (Home) - the initially visible page, keep it eager.
     m_browser = WebView::CreateWebView(this, UrlRight, "Home");
     if (m_browser == nullptr) {
         wxLogError("Could not init m_browser");
         return;
     }
 
-    // Makerworld webview
-    m_browserMW = WebView::CreateWebView(m_online_container, "about:blank", "Makerworld");
-    if (m_browserMW == nullptr) {
-        wxLogError("Could not init  m_browserMW");
-        return;
-    }
-    m_browserMW->Hide();
+    // The other four WebViews are hidden at startup, so their creation is
+    // deferred to the ensure_*() helpers on first use. Their initial state is
+    // still prepared here, exactly as it was when they were created eagerly.
     SetMakerworldModelID("");
     m_onlinefirst    = false;
 
-    // MakerLab webview
-    m_browserML = WebView::CreateWebView(m_online_container, "about:blank", "MakerLab");
-    if (m_browserML == nullptr) {
-        wxLogError("Could not init  m_browserML");
-        return;
-    }
-    m_browserML->Hide();
     SetMakerlabUrl("");
     m_MakerLabFirst = false;
 
-    // PrintHistory webview
-    m_browserPH = WebView::CreateWebView(this, "about:blank", "PrintHistory");
-    if (m_browserPH == nullptr) {
-        wxLogError("Could not init  m_browserPH");
-        return;
-    }
-    m_browserPH->Hide();
     SetPrintHistoryTaskID(0);
     m_printhistoryfirst = false;
 
-    // Wiki webview
-    m_browserWiki = WebView::CreateWebView(this, UrlWiki, "Wiki");
-    if (m_browserWiki == nullptr) {
-        wxLogError("Could not init  m_browserWiki");
-        return;
-    }
-    m_browserWiki->Hide();
     m_WikiFirst = false;
 
-    // Position
+    // Position. m_browserMW / m_browserML / m_browserPH / m_browserWiki are added
+    // to their sizers by ensure_makerworld() / ensure_makerlab() /
+    // ensure_print_history() / ensure_wiki() when they are first created.
     m_home_web->Add(m_browserLeft, 0, wxEXPAND | wxALL, 0);
     m_home_web->Add(m_browser, 1, wxEXPAND | wxALL, 0);
-    m_online_container_sizer->Add(m_browserMW, 1, wxEXPAND | wxALL, 0);
-    m_online_container_sizer->Add(m_browserML, 1, wxEXPAND | wxALL, 0);
     m_home_web->Add(m_online_container, 1, wxEXPAND | wxALL, 0);
-    m_home_web->Add(m_browserPH, 1, wxEXPAND | wxALL, 0);
-    m_home_web->Add(m_browserWiki, 1, wxEXPAND | wxALL, 0);
 
     topsizer->Add(m_home_web,1, wxEXPAND | wxALL, 0);
 
@@ -419,6 +383,112 @@ WebViewPanel::WebViewPanel(wxWindow *parent)
         }
     });
  }
+
+wxWebView* WebViewPanel::ensure_left_menu()
+{
+    // Safety net only: the left menu is created eagerly in the constructor
+    // because it is visible on the Home tab from the very start.
+    if (m_browserLeft)
+        return m_browserLeft;
+
+    wxString UrlLeft = wxString::Format("file://%s/web/homepage3/left.html", from_u8(resources_dir()));
+    wxString strlang = GetStudioLanguage();
+    if (strlang != "")
+        UrlLeft = wxString::Format("file://%s/web/homepage3/left.html?lang=%s", from_u8(resources_dir()), strlang);
+
+    m_leftfirst   = false;
+    m_browserLeft = WebView::CreateWebView(this, UrlLeft, "LeftMenu");
+    if (m_browserLeft == nullptr) {
+        wxLogError("Could not init m_browser");
+        return nullptr;
+    }
+    m_browserLeft->SetSize(wxSize(FromDIP(224), -1));
+    m_browserLeft->SetMinSize(wxSize(FromDIP(224), -1));
+    m_browserLeft->SetMaxSize(wxSize(FromDIP(224), -1));
+    m_home_web->Add(m_browserLeft, 0, wxEXPAND | wxALL, 0);
+    Layout();
+    return m_browserLeft;
+}
+
+wxWebView* WebViewPanel::ensure_makerworld()
+{
+    if (m_browserMW)
+        return m_browserMW;
+
+    m_browserMW = WebView::CreateWebView(m_online_container, "about:blank", "Makerworld");
+    if (m_browserMW == nullptr) {
+        wxLogError("Could not init  m_browserMW");
+        return nullptr;
+    }
+    m_browserMW->Hide();
+    m_online_container_sizer->Add(m_browserMW, 1, wxEXPAND | wxALL, 0);
+    m_online_container->Layout();
+    return m_browserMW;
+}
+
+wxWebView* WebViewPanel::ensure_makerlab()
+{
+    if (m_browserML)
+        return m_browserML;
+
+    m_browserML = WebView::CreateWebView(m_online_container, "about:blank", "MakerLab");
+    if (m_browserML == nullptr) {
+        wxLogError("Could not init  m_browserML");
+        return nullptr;
+    }
+    m_browserML->Hide();
+    m_online_container_sizer->Add(m_browserML, 1, wxEXPAND | wxALL, 0);
+    m_online_container->Layout();
+    return m_browserML;
+}
+
+wxWebView* WebViewPanel::ensure_print_history()
+{
+    if (m_browserPH)
+        return m_browserPH;
+
+    m_browserPH = WebView::CreateWebView(this, "about:blank", "PrintHistory");
+    if (m_browserPH == nullptr) {
+        wxLogError("Could not init  m_browserPH");
+        return nullptr;
+    }
+    m_browserPH->Hide();
+    m_home_web->Add(m_browserPH, 1, wxEXPAND | wxALL, 0);
+    Layout();
+    return m_browserPH;
+}
+
+wxWebView* WebViewPanel::ensure_wiki()
+{
+    if (m_browserWiki)
+        return m_browserWiki;
+
+    wxString UrlWiki = wxString::Format("file://%s/web/homepage3/wiki.html", from_u8(resources_dir()));
+    wxString wiki_region_param;
+    if (!m_Region.empty())
+        wiki_region_param = wxString::Format("region=%s", from_u8(m_Region));
+    if (!wiki_region_param.empty())
+        UrlWiki = wxString::Format("file://%s/web/homepage3/wiki.html?%s", from_u8(resources_dir()), wiki_region_param);
+
+    wxString strlang = GetStudioLanguage();
+    if (strlang != "")
+    {
+        if (!wiki_region_param.empty())
+            UrlWiki = wxString::Format("file://%s/web/homepage3/wiki.html?lang=%s&%s", from_u8(resources_dir()), strlang, wiki_region_param);
+        else
+            UrlWiki = wxString::Format("file://%s/web/homepage3/wiki.html?lang=%s", from_u8(resources_dir()), strlang);
+    }
+
+    m_browserWiki = WebView::CreateWebView(this, UrlWiki, "Wiki");
+    if (m_browserWiki == nullptr) {
+        wxLogError("Could not init  m_browserWiki");
+        return nullptr;
+    }
+    m_browserWiki->Hide();
+    m_home_web->Add(m_browserWiki, 1, wxEXPAND | wxALL, 0);
+    Layout();
+    return m_browserWiki;
+}
 
 WebViewPanel::~WebViewPanel()
 {
@@ -607,6 +677,8 @@ void WebViewPanel::OnReload(wxCommandEvent& WXUNUSED(evt))
 
 void WebViewPanel::OnOnlineBack(wxCommandEvent& WXUNUSED(evt))
 {
+    // Only reachable once the online/makerlab tab has been opened, which creates
+    // the WebView. If it is still null there is nothing to navigate back.
     wxWebView *target = nullptr;
     if (m_contentname == "online")
         target = m_browserMW;
@@ -624,6 +696,7 @@ void WebViewPanel::OnOnlineBack(wxCommandEvent& WXUNUSED(evt))
 
 void WebViewPanel::OnOnlineReload(wxCommandEvent& WXUNUSED(evt))
 {
+    // Drop the reload if the deferred WebView has not been created yet.
     wxWebView *target = nullptr;
     if (m_contentname == "online")
         target = m_browserMW;
@@ -637,6 +710,7 @@ void WebViewPanel::OnOnlineReload(wxCommandEvent& WXUNUSED(evt))
 
 void WebViewPanel::OnOpenInBrowser(wxCommandEvent& WXUNUSED(evt))
 {
+    // No deferred WebView to read a URL from yet: safely drop the request.
     wxWebView *target = nullptr;
     if (m_contentname == "online")
         target = m_browserMW;
@@ -992,6 +1066,11 @@ void WebViewPanel::get_wiki_search_result(std::string keyword)
     http.set_post_body(json_body);
     http.on_complete([this](std::string body, unsigned status) {
         CallAfter([this, body]() {
+            // The search request originates from the Wiki page itself. If the
+            // Wiki WebView was never opened (or is gone), drop the late result
+            // instead of forcing a hidden page into existence.
+            if (!m_browserWiki)
+                return;
             json j = json::parse(body);
             if (j.contains("data")) {
                 auto body2 = from_u8(body);
@@ -1311,7 +1390,8 @@ void WebViewPanel::SaveMakerlabStl(int SequenceID, std::string Base64Buf, std::s
 
 void WebViewPanel::UpdateMakerlabStatus(  )
 {
-    if (m_browserML == nullptr) return;
+    // MakerLab is a deferred WebView: create it on the first status update.
+    if (!ensure_makerlab()) return;
 
     wxString ml_currenturl;
     if (m_MakerLab_LastUrl != "") {
@@ -1420,6 +1500,10 @@ bool WebViewPanel::GetJumpUrl(bool login, wxString ticket, wxString targeturl, w
 
 void WebViewPanel::UpdateMakerworldLoginStatus()
 {
+    // Create the deferred MakerWorld WebView before driving its login flow.
+    // The original code always had it available at this point.
+    if (!ensure_makerworld()) return;
+
     const std::uint64_t flow_id = ++m_makerworld_sso_flow_id;
     NetworkAgent *agent = GUI::wxGetApp().getAgent();
     if (agent == nullptr) {
@@ -1450,7 +1534,9 @@ void WebViewPanel::UpdateMakerworldLoginStatus()
 
 void WebViewPanel::SetMakerworldPageLoginStatus(bool login ,wxString ticket)
 {
-    if (m_browserMW == nullptr) return;
+    // Login state has to be applied to the MakerWorld page, so create it on
+    // first use here instead of at startup.
+    if (!ensure_makerworld()) return;
 
     if (!login)
         m_makerworld_sso_redirect_completed = false;
@@ -1552,7 +1638,9 @@ void WebViewPanel::ShowUserPrintTask(bool bShow, bool bForce)
 
                     auto body2 = from_u8(m_TaskInfo);
                     body2.insert(1, "\"command\": \"printhistory_task_show\", ");
-                    WebView::RunScript(m_browserLeft, wxString::Format("window.postMessage(%s)", body2));
+                    // Left menu is eager, but guard it in case its creation failed.
+                    if (m_browserLeft)
+                        WebView::RunScript(m_browserLeft, wxString::Format("window.postMessage(%s)", body2));
                     RunScript(wxString::Format("window.postMessage(%s)", body2));
 
                     SetLeftMenuShow("printhistory", 1);
@@ -2261,7 +2349,9 @@ void WebViewPanel::OnError(wxWebViewEvent& evt)
     }
     //m_info->ShowMessage(_L("An error occurred loading ") + evt.GetURL() + "\n" + "'" + category + "'", wxICON_ERROR);
 
-    if (evt.GetInt() == wxWEBVIEW_NAV_ERR_CONNECTION && evt.GetId() == m_browserMW->GetId())
+    // All three pages below are deferred; an error can only come from an
+    // already-created WebView, so null-check before dereferencing its id.
+    if (m_browserMW && evt.GetInt() == wxWEBVIEW_NAV_ERR_CONNECTION && evt.GetId() == m_browserMW->GetId())
     {
         m_online_LastUrl = m_browserMW->GetCurrentURL();
 
@@ -2279,7 +2369,7 @@ void WebViewPanel::OnError(wxWebViewEvent& evt)
         }
     }
 
-    if (evt.GetInt() == wxWEBVIEW_NAV_ERR_CONNECTION && evt.GetId() == m_browserPH->GetId()) {
+    if (m_browserPH && evt.GetInt() == wxWEBVIEW_NAV_ERR_CONNECTION && evt.GetId() == m_browserPH->GetId()) {
         m_print_history_LastUrl = m_browserPH->GetCurrentURL();
 
         if (m_contentname == "printhistory") {
@@ -2295,7 +2385,7 @@ void WebViewPanel::OnError(wxWebViewEvent& evt)
         }
     }
 
-    if (evt.GetInt() == wxWEBVIEW_NAV_ERR_CONNECTION && evt.GetId() == m_browserML->GetId()) {
+    if (m_browserML && evt.GetInt() == wxWEBVIEW_NAV_ERR_CONNECTION && evt.GetId() == m_browserML->GetId()) {
         m_MakerLab_LastUrl = m_browserML->GetCurrentURL();
 
         if (m_contentname == "makerlab") {
@@ -2388,6 +2478,10 @@ void WebViewPanel::SwitchWebContent(std::string modelname, int refresh)
     }
     else if (modelname.compare("makerlab") == 0)
     {
+        // First time the MakerLab tab is opened, create its deferred WebView.
+        if (!ensure_makerlab())
+            return;
+
         wxString FinalUrl;
 
         if (!m_MakerLabFirst)
@@ -2414,6 +2508,10 @@ void WebViewPanel::SwitchWebContent(std::string modelname, int refresh)
 
         show_online_toolbar = true;
     } else if (modelname.compare("online") == 0) {
+
+        // First time the MakerWorld tab is opened, create its deferred WebView.
+        if (!ensure_makerworld())
+            return;
 
         if (!m_onlinefirst) {
             if (m_loginstatus == 1) {
@@ -2455,6 +2553,10 @@ void WebViewPanel::SwitchWebContent(std::string modelname, int refresh)
 
         show_online_toolbar = true;
     } else if (modelname.compare("printhistory") == 0) {
+
+        // First time the PrintHistory tab is opened, create its deferred WebView.
+        if (!ensure_print_history())
+            return;
 
         if (!m_printhistoryfirst)
         {
@@ -2506,7 +2608,8 @@ void WebViewPanel::SwitchWebContent(std::string modelname, int refresh)
         }
 
         if (!m_WikiFirst || m_Wiki_LastUrl != wikiUrl) {
-            if (m_browserWiki != nullptr)
+            // Create the Wiki WebView the first time the manual tab is opened.
+            if (ensure_wiki())
                 m_browserWiki->LoadURL(wikiUrl);
             m_Wiki_LastUrl = wikiUrl;
             m_WikiFirst = true;
@@ -2683,6 +2786,8 @@ void WebViewPanel::RefreshMenuAccess()
 }
 
 void WebViewPanel::SetLeftMenuWidth(int nWidth) {
+    // Left menu is eager; guard in case its creation failed at startup.
+    if (!m_browserLeft) return;
     m_browserLeft->SetSize(wxSize(FromDIP(nWidth), -1));
     m_browserLeft->SetMinSize(wxSize(FromDIP(nWidth), -1));
     m_browserLeft->SetMaxSize(wxSize(FromDIP(nWidth), -1));

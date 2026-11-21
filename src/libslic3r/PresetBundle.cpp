@@ -554,7 +554,8 @@ void PresetBundle::copy_files(const std::string& from)
 }
 
 std::pair<PresetsConfigSubstitutions, std::string> PresetBundle::load_presets(AppConfig &config, ForwardCompatibilitySubstitutionRule substitution_rule,
-                                                      const PresetPreferences& preferred_selection/* = PresetPreferences()*/)
+                                                      const PresetPreferences& preferred_selection/* = PresetPreferences()*/,
+                                                      std::function<void()> progress_callback/* = nullptr*/)
 {
     // First load the vendor specific system presets.
     PresetsConfigSubstitutions substitutions;
@@ -563,7 +564,7 @@ std::pair<PresetsConfigSubstitutions, std::string> PresetBundle::load_presets(Ap
     //BBS: add config related logs
     BOOST_LOG_TRIVIAL(info) << boost::format("enter, substitution_rule %1%, preferred printer_model_id %2%")%substitution_rule%preferred_selection.printer_model_id;
     //BBS: change system config to json
-    std::tie(substitutions, errors_cummulative) = this->load_system_presets_from_json(substitution_rule);
+    std::tie(substitutions, errors_cummulative) = this->load_system_presets_from_json(substitution_rule, progress_callback);
 
     // BBS load preset from user's folder, load system default if
     // BBS: change directories by design
@@ -1601,7 +1602,8 @@ void PresetBundle::remove_users_preset(AppConfig &config, std::map<std::string, 
 }*/
 
 //BBS: add json related logic, load system presets from json
-std::pair<PresetsConfigSubstitutions, std::string> PresetBundle::load_system_presets_from_json(ForwardCompatibilitySubstitutionRule compatibility_rule)
+std::pair<PresetsConfigSubstitutions, std::string> PresetBundle::load_system_presets_from_json(ForwardCompatibilitySubstitutionRule compatibility_rule,
+                                                                                                const std::function<void()>& progress_callback)
 {
     //BBS: add config related logs
     BOOST_LOG_TRIVIAL(debug) << boost::format("enter, compatibility_rule %1%")%compatibility_rule;
@@ -1650,6 +1652,11 @@ std::pair<PresetsConfigSubstitutions, std::string> PresetBundle::load_system_pre
                 errors_cummulative += err.what();
                 errors_cummulative += "\n";
             }
+            // Let the GUI repaint / pump events between vendor bundles: loading
+            // thousands of preset JSON files otherwise blocks the UI thread long
+            // enough for the OS to show its "not responding" dialog.
+            if (progress_callback)
+                progress_callback();
         }
     }
 

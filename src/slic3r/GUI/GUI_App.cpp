@@ -62,6 +62,7 @@
 #include <wx/richmsgdlg.h>
 #include <wx/log.h>
 #include <wx/intl.h>
+#include <wx/eventloop.h>
 
 #include <wx/dialog.h>
 #include <wx/textctrl.h>
@@ -358,6 +359,10 @@ public:
             // without this code splash screen wouldn't be updated under OSX
             wxYield();
 #endif
+            // Force a repaint on every platform: SetText() is not guaranteed to
+            // update the visible splash by itself outside macOS.
+            Refresh();
+            Update();
         }
     }
 
@@ -1280,6 +1285,8 @@ void GUI_App::post_init()
         slow_bootup = true;
         BOOST_LOG_TRIVIAL(info) << "slow bootup, won't render gl here.";
     }
+    pump_startup_ui(_L("Initializing 3D view"));
+    bool gl_initialized = false;
     if (!switch_to_3d) {
         BOOST_LOG_TRIVIAL(info) << "begin load_gl_resources";
         mainframe->Freeze();
@@ -1303,12 +1310,7 @@ void GUI_App::post_init()
 
             BOOST_LOG_TRIVIAL(info) << "finished init imgui frame";
             plater_->canvas3D()->enable_render(true);
-
-            if (!slow_bootup) {
-                BOOST_LOG_TRIVIAL(info) << "start to render a first frame for test";
-                plater_->canvas3D()->render(false);
-                BOOST_LOG_TRIVIAL(info) << "finished rendering a first frame for test";
-            }
+            gl_initialized = true;
 //#ifdef __linux__
         }
         else {
@@ -1320,7 +1322,33 @@ void GUI_App::post_init()
         mainframe->Thaw();
         BOOST_LOG_TRIVIAL(info) << "end load_gl_resources";
     }
-    plater_->trigger_restore_project(1);
+    perf_mark("Startup OpenGL ready");
+
+    // Stage the first test frame and the project restore onto a later event-loop
+    // turn. Running them inline here kept the GUI thread busy after the main window
+    // was already visible, which is exactly what triggers the OS "not responding"
+    // prompt. The splash stays up (and keeps getting repainted) until this runs.
+    CallAfter([this, slow_bootup, gl_initialized]() {
+        if (! slow_bootup && gl_initialized && plater_ && plater_->canvas3D()) {
+            BOOST_LOG_TRIVIAL(info) << "start to render a first frame for test";
+            plater_->canvas3D()->render(false);
+            BOOST_LOG_TRIVIAL(info) << "finished rendering a first frame for test";
+        }
+        pump_startup_ui(_L("Restoring project"));
+        if (plater_)
+            plater_->trigger_restore_project(1);
+
+        // Startup is interactive now: tear down the splash and re-enable normal
+        // event handling. wxEVT_DESTROY clears m_startup_splash for us.
+        if (m_startup_splash) {
+            m_startup_splash->Destroy();
+            m_startup_splash = nullptr;
+        }
+        m_starting_up = false;
+        if (m_startup_watchdog_active) m_startup_watchdog_active->store(false);
+        perf_mark("Interactive");
+        BOOST_LOG_TRIVIAL(info) << "startup fully interactive";
+    });
     //#endif
 
     //BBS: remove GCodeViewer as seperate APP logic
@@ -1414,31 +1442,60 @@ void GUI_App::post_init()
         //BOOST_LOG_TRIVIAL(info) << "before check_updates";
         //this->check_updates(false);
         //BOOST_LOG_TRIVIAL(info) << "after check_updates";
+        // Post each step separately so the event loop can run (and the splash can
+        // repaint) between network operations instead of blocking in one callback.
         CallAfter([this] {
-            bool cw_showed = this->config_wizard_startup();
-
+            if (is_closing() || ! mainframe || m_tls_init_warning.empty())
+                return;
+            RichMessageDialog dlg(nullptr,
+                wxString::Format(_L("%s\nDo you want to continue?"), m_tls_init_warning),
+                "BambuStudio", wxICON_QUESTION | wxYES_NO);
+            dlg.ShowCheckBox(_L("Remember my choice"));
+            const bool accepted = dlg.ShowModal() == wxID_YES;
+            app_config->set("tls_cert_store_accepted", dlg.IsCheckBoxChecked() ? "yes" : "no");
+            app_config->set("tls_accepted_cert_store_location",
+                dlg.IsCheckBoxChecked() ? Slic3r::Http::tls_system_cert_store() : "");
+            m_tls_init_warning.clear();
+            if (! accepted && mainframe)
+                mainframe->Close(true);
+        });
+        CallAfter([this] {
+            if (! is_closing() && mainframe)
+                this->config_wizard_startup();
+        });
+        CallAfter([this] {
+            if (is_closing() || ! mainframe)
+                return;
             std::string http_url = get_http_url(app_config->get_country_code());
             std::string language = GUI::into_u8(current_language_code());
             std::string network_ver = Slic3r::NetworkAgent::get_version();
             bool        sys_preset  = app_config->get("sync_system_preset") == "true";
             this->preset_updater->sync(http_url, language, network_ver, sys_preset ? preset_bundle : nullptr);
-
+        });
+        CallAfter([this] {
+            if (is_closing() || ! mainframe)
+                return;
             //BBS: check new version
             this->check_new_version();
-
+        });
+        CallAfter([this] {
+            if (is_closing() || ! mainframe)
+                return;
             //BBS: pull the studio version policy, the startup check point waits for it
             VersionPolicyManager::inst().init([this] {
                 CallAfter([this] {
                     this->check_startup_version_policy();
                 });
             });
-
+        });
+        CallAfter([this] {
+            if (is_closing() || ! mainframe)
+                return;
             //BBS: check privacy version
             if (is_user_login()) {
                 this->check_privacy_version(0);
                 this->fetch_minors_decisions();
             }
-
             this->check_cert();
         });
     }
@@ -1464,42 +1521,49 @@ void GUI_App::post_init()
 
     //update the plugin tips
     CallAfter([this] {
-            mainframe->refresh_plugin_tips();
+            if (! is_closing() && mainframe)
+                mainframe->refresh_plugin_tips();
         });
 
-    // remove old log files over LOG_FILES_MAX_NUM
+    // Remove old log files over LOG_FILES_MAX_NUM. Pure file IO — keep it off the
+    // startup UI thread. OnExit() joins the worker before the app is destroyed.
     std::string log_addr = data_dir();
     if (!log_addr.empty()) {
-        auto log_folder = boost::filesystem::path(log_addr) / "log";
-        if (boost::filesystem::exists(log_folder)) {
-           std::vector<std::pair<time_t, std::string>> files_vec;
-           for (auto& it : boost::filesystem::directory_iterator(log_folder)) {
-               auto temp_path = it.path();
-               try {
-                   if (it.status().type() == boost::filesystem::regular_file) {
-                       std::time_t lw_t = boost::filesystem::last_write_time(temp_path) ;
-                       files_vec.push_back({ lw_t, temp_path.filename().string() });
-                   }
-               } catch (const std::exception &) {
-               }
-           }
-           std::sort(files_vec.begin(), files_vec.end(), [](
-               std::pair<time_t, std::string> &a, std::pair<time_t, std::string> &b) {
-               return a.first > b.first;
-           });
+        m_log_cleanup_thread = std::thread([log_addr]() {
+            try {
+                auto log_folder = boost::filesystem::path(log_addr) / "log";
+                if (! boost::filesystem::exists(log_folder))
+                    return;
+                std::vector<std::pair<time_t, std::string>> files_vec;
+                for (auto& it : boost::filesystem::directory_iterator(log_folder)) {
+                    auto temp_path = it.path();
+                    try {
+                        if (it.status().type() == boost::filesystem::regular_file) {
+                            std::time_t lw_t = boost::filesystem::last_write_time(temp_path);
+                            files_vec.push_back({ lw_t, temp_path.filename().string() });
+                        }
+                    } catch (const std::exception&) {
+                    }
+                }
+                std::sort(files_vec.begin(), files_vec.end(), [](
+                    std::pair<time_t, std::string> &a, std::pair<time_t, std::string> &b) {
+                    return a.first > b.first;
+                });
 
-           while (files_vec.size() > LOG_FILES_MAX_NUM) {
-               auto full_path = log_folder / boost::filesystem::path(files_vec[files_vec.size() - 1].second);
-               BOOST_LOG_TRIVIAL(info) << "delete log file over " << LOG_FILES_MAX_NUM << ", filename: "<< files_vec[files_vec.size() - 1].second;
-               try {
-                   boost::filesystem::remove(full_path);
-               }
-               catch (const std::exception& ex) {
-                   BOOST_LOG_TRIVIAL(error) << "failed to delete log file: "<< files_vec[files_vec.size() - 1].second << ". Error: " << ex.what();
-               }
-               files_vec.pop_back();
-           }
-        }
+                while (files_vec.size() > LOG_FILES_MAX_NUM) {
+                    auto full_path = log_folder / boost::filesystem::path(files_vec[files_vec.size() - 1].second);
+                    BOOST_LOG_TRIVIAL(info) << "delete log file over " << LOG_FILES_MAX_NUM << ", filename: " << files_vec[files_vec.size() - 1].second;
+                    try {
+                        boost::filesystem::remove(full_path);
+                    } catch (const std::exception& ex) {
+                        BOOST_LOG_TRIVIAL(error) << "failed to delete log file: " << files_vec[files_vec.size() - 1].second << ". Error: " << ex.what();
+                    }
+                    files_vec.pop_back();
+                }
+            } catch (const std::exception& ex) {
+                BOOST_LOG_TRIVIAL(error) << "failed to prune log directory: " << ex.what();
+            }
+        });
     }
     BOOST_LOG_TRIVIAL(info) << "finished post_init";
 #ifdef _WIN32
@@ -2950,6 +3014,9 @@ int GUI_App::OnExit()
     if (m_minors_decisions_thread.joinable())
         m_minors_decisions_thread.join();
 
+    if (m_log_cleanup_thread.joinable())
+        m_log_cleanup_thread.join();
+
     if (m_fila_manager_cloud_disp) {
         delete m_fila_manager_cloud_disp;
         m_fila_manager_cloud_disp = nullptr;
@@ -3185,9 +3252,75 @@ std::string get_system_info()
     return out.str();
 }
 
+// Keep the splash (and therefore the top-level window) responsive to the OS while
+// startup work is running. Only UI and timer events are pumped: dispatching new user
+// input or state-changing events here could re-enter half-initialised GUI code.
+// ProgressDialog::Yield() uses the same category-limited YieldFor() approach.
+void GUI_App::pump_startup_ui(const wxString& phase)
+{
+    if (! m_starting_up)
+        return;
+
+    if (m_startup_splash) {
+        m_startup_splash->SetText(phase + dots);
+        // The main frame is shown while post_init() is still running; keep the
+        // splash above it so the user sees progress instead of a frozen window.
+        m_startup_splash->Raise();
+        m_startup_splash->Refresh();
+        m_startup_splash->Update();
+    }
+
+    if (auto *loop = wxEventLoopBase::GetActive())
+        loop->YieldFor(wxEVT_CATEGORY_UI | wxEVT_CATEGORY_TIMER);
+    else
+        // OnInit() runs before wxEntry() creates the main loop; wxYield() still
+        // paints the splash there (needed on GTK).
+        wxYield();
+}
+
 bool GUI_App::on_init_inner()
 {
     PERF_TRACE("Initializing application");
+    m_starting_up = true;
+
+    // Non-UI watchdog: a detached worker logs if startup has not finished after
+    // a threshold. It never calls ShowModal() or touches any wx object, so it
+    // cannot add to the hang it is diagnosing.
+    m_startup_watchdog_active = std::make_shared<std::atomic<bool>>(true);
+    auto startup_watchdog_flag = m_startup_watchdog_active;
+    // Posted back to the UI thread if startup never reaches its interactive
+    // milestone — a splash must never be left covering the app forever.
+    auto force_close_splash = [this]() {
+        CallAfter([this]() {
+            if (m_startup_splash) {
+                BOOST_LOG_TRIVIAL(warning) << "Startup did not reach interactive state; closing splash";
+                m_startup_splash->Destroy();
+                m_startup_splash = nullptr;
+            }
+            m_starting_up = false;
+            if (m_startup_watchdog_active) m_startup_watchdog_active->store(false);
+        });
+    };
+    std::thread([startup_watchdog_flag, force_close_splash]() {
+        constexpr auto warning_after = std::chrono::seconds(12);
+        constexpr auto force_after   = std::chrono::seconds(30);
+        const auto started = std::chrono::steady_clock::now();
+        bool warned = false;
+        while (startup_watchdog_flag->load()) {
+            const auto elapsed = std::chrono::steady_clock::now() - started;
+            if (! warned && elapsed >= warning_after) {
+                warned = true;
+                BOOST_LOG_TRIVIAL(warning) << "[StartupWatchdog] startup still not interactive after "
+                                           << warning_after.count() << "s; check perf_mark phase timings";
+            }
+            if (elapsed >= force_after) {
+                force_close_splash();
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        }
+    }).detach();
+
     wxLog::SetActiveTarget(new wxBoostLog());
     set_severity_level(app_config->get("severity_level"));
 
@@ -3321,17 +3454,10 @@ bool GUI_App::on_init_inner()
         bool ssl_accept = app_config->get("tls_cert_store_accepted") == "yes" && ssl_cert_store == Slic3r::Http::tls_system_cert_store();
 
         if (!msg.empty() && !ssl_accept) {
-            RichMessageDialog
-                dlg(nullptr,
-                    wxString::Format(_L("%s\nDo you want to continue?"), msg),
-                    "BambuStudio", wxICON_QUESTION | wxYES_NO);
-            dlg.ShowCheckBox(_L("Remember my choice"));
-            if (dlg.ShowModal() != wxID_YES) return false;
-
-            app_config->set("tls_cert_store_accepted",
-                dlg.IsCheckBoxChecked() ? "yes" : "no");
-            app_config->set("tls_accepted_cert_store_location",
-                dlg.IsCheckBoxChecked() ? Slic3r::Http::tls_system_cert_store() : "");
+            // Keep the TLS initialization here (it must happen before any HTTP
+            // request), but defer the modal prompt until after the main window is
+            // shown so startup never looks dead with a dialog before the splash.
+            m_tls_init_warning = from_u8(msg);
         }
     }
 
@@ -3415,10 +3541,17 @@ bool GUI_App::on_init_inner()
     }
 
     wxWeakRef<BBLSplashScreen> scrn;
-
-    // BBS: ensure the splash screen is torn down on every exit path safely
-    ScopeGuard delete_scrn([&scrn]() {
-        if (scrn) scrn->Destroy();
+    // The splash is handed over to post_init() on the success path (it must stay
+    // visible through the OpenGL init / project restore). On every error path the
+    // guard below still tears it down and clears the startup state.
+    bool splash_handed_off = false;
+    ScopeGuard delete_scrn([&scrn, &splash_handed_off, this]() {
+        if (! splash_handed_off) {
+            if (scrn) scrn->Destroy();
+            m_startup_splash = nullptr;
+            m_starting_up     = false;
+            if (m_startup_watchdog_active) m_startup_watchdog_active->store(false);
+        }
     });
     const bool show_splash_screen = true;
     if (show_splash_screen) {
@@ -3437,18 +3570,12 @@ bool GUI_App::on_init_inner()
         BOOST_LOG_TRIVIAL(info) << "begin to show the splash screen...";
         //BBS use BBL splashScreen
         scrn = new BBLSplashScreen(bmp, wxSPLASH_CENTRE_ON_SCREEN, 0, splashscreen_pos);
-        // Process pending paint events so the splash is drawn immediately on all
-        // platforms. Without this, GTK never paints the window before the heavy
-        // loading work begins, leaving a black window until the app is ready.
-        wxYield();
+        m_startup_splash = scrn;
+        // The splash can be dismissed by the platform; keep the member in sync so
+        // post_init() never dereferences a destroyed window.
+        scrn->Bind(wxEVT_DESTROY, [this](wxWindowDestroyEvent&) { m_startup_splash = nullptr; });
         scrn->Raise();
-        scrn->Update();
-        scrn->SetText(_L("Loading configuration")+ dots);
-        // BBLSplashScreen::SetText() does not force a repaint on non-macOS.
-        // Refresh() + Update() ensure the first status line is visible before
-        // the heavy startup work begins.
-        scrn->Refresh();
-        scrn->Update();
+        pump_startup_ui(_L("Loading configuration"));
     }
 
     BOOST_LOG_TRIVIAL(info) << "loading systen presets...";
@@ -3476,7 +3603,9 @@ bool GUI_App::on_init_inner()
             associate_files(L"gcode");
 #endif // __WXMSW__
 
+        pump_startup_ui(_L("Checking installed presets"));
         preset_updater = new PresetUpdater();
+        perf_mark("Startup preset updater ready");
         Bind(EVT_SLIC3R_VERSION_ONLINE, [this](const wxCommandEvent& evt) {
             if (this->plater_ != nullptr) {
                 // this->plater_->get_notification_manager()->push_notification(NotificationType::NewAppAvailable);
@@ -3587,8 +3716,10 @@ bool GUI_App::on_init_inner()
     std::map<std::string, std::string> extra_headers = get_extra_header();
     Slic3r::Http::set_extra_headers(extra_headers);
 
+    pump_startup_ui(_L("Connecting to printer services"));
     copy_network_if_available();
     on_init_network();
+    perf_mark("Startup network ready");
 
     if (m_agent && m_agent->is_user_login()) {
         enable_user_preset_folder(true);
@@ -3598,12 +3729,16 @@ bool GUI_App::on_init_inner()
 
     // BBS if load user preset failed
     //if (loaded_preset_result != 0) {
+        pump_startup_ui(_L("Loading presets"));
         try {
             // Enable all substitutions (in both user and system profiles), but log the substitutions in user profiles only.
             // If there are substitutions in system profiles, then a "reconfigure" event shall be triggered, which will force
             // installation of a compatible system preset, thus nullifying the system preset substitutions.
             std::string errors_cummulative;
-            std::tie(init_params->preset_substitutions, errors_cummulative) = preset_bundle->load_presets(*app_config, ForwardCompatibilitySubstitutionRule::EnableSystemSilent);
+            std::tie(init_params->preset_substitutions, errors_cummulative) =
+                preset_bundle->load_presets(*app_config, ForwardCompatibilitySubstitutionRule::EnableSystemSilent,
+                    PresetBundle::PresetPreferences(),
+                    [this]() { pump_startup_ui(_L("Loading presets")); });
             if (!errors_cummulative.empty())
                 show_error(nullptr, errors_cummulative);
             // AppConfig-restored filament colors may predate the JSON primary-color alignment
@@ -3615,6 +3750,7 @@ bool GUI_App::on_init_inner()
             show_error(nullptr, ex.what());
         }
     //}
+    perf_mark("Startup presets loaded");
 
 #ifdef WIN32
 #if !wxVERSION_EQUAL_OR_GREATER_THAN(3,1,3)
@@ -3662,8 +3798,10 @@ bool GUI_App::on_init_inner()
         }
     }
 
+    pump_startup_ui(_L("Preparing main window"));
     BOOST_LOG_TRIVIAL(info) << "create the main window";
     mainframe = new MainFrame();
+    perf_mark("Startup main window created");
     // hide settings tabs after first Layout
     if (is_editor()) {
         mainframe->select_tab(size_t(0));
@@ -3688,6 +3826,8 @@ bool GUI_App::on_init_inner()
     }
     else
         load_current_presets();
+
+    pump_startup_ui(_L("Finishing startup"));
 
     if (plater_ != nullptr) {
         plater_->reset_project_dirty_initial_presets();
@@ -3798,6 +3938,8 @@ bool GUI_App::on_init_inner()
     });
 
     m_initialized = true;
+    // post_init() now owns the splash lifetime (see the idle handler below).
+    splash_handed_off = true;
 
     flush_logs();
 
@@ -3973,10 +4115,14 @@ __retry:
             std::string country_code = app_config->get_country_code();
             m_agent->set_country_code(country_code);
             m_agent->start();
-            m_load_last_machine.InnerLoad(m_agent, getDeviceManager());
-            if (auto dev = getDeviceManager()) {
-                dev->restore_local_machines_from_user_access_config();
-            }
+            // Restoring the last machine reads config and may kick off a device
+            // bind. It does not need to block the main window from appearing, so
+            // move it to the first event-loop turn.
+            CallAfter([this]() {
+                m_load_last_machine.InnerLoad(m_agent, getDeviceManager());
+                if (auto dev = getDeviceManager())
+                    dev->restore_local_machines_from_user_access_config();
+            });
         }
     }
     else {
@@ -6992,7 +7138,9 @@ void GUI_App::start_sync_user_preset(bool with_progress_dlg)
     m_user_sync_token.reset(new int(0));
     if (with_progress_dlg) {
         auto dlg = new ProgressDialog(_L("Loading"), "", 100, this->mainframe, wxPD_AUTO_HIDE | wxPD_APP_MODAL | wxPD_CAN_ABORT);
-        dlg->EnableYield(false);
+        // Progress updates are marshalled with CallAfter(), so let the dialog
+        // pump UI events itself instead of disabling yields entirely. Windows
+        // keeps its platform default (no internal yield) to avoid re-entrancy.
         dlg->Update(0, _L("Loading user preset"));
         progressFn = [this, dlg](int percent) {
             CallAfter([=]{

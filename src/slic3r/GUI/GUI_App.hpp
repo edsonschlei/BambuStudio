@@ -39,6 +39,7 @@
 
 #include <mutex>
 #include <stack>
+#include <thread>
 #include "libslic3r/Log.hpp"
 
 #ifdef __APPLE__
@@ -68,6 +69,7 @@ class wxGLCanvas;
 // BBS
 class Notebook;
 struct wxLanguageInfo;
+class BBLSplashScreen;
 
 namespace Slic3r {
 
@@ -281,6 +283,17 @@ public:
 private:
     bool            m_initialized { false };
     bool            m_post_initialized { false };
+    // Startup loading state: the splash stays up until post_init() has finished
+    // the 3D view init and queued the project restore. While m_starting_up is set,
+    // startup pumps UI events in small steps instead of blocking the GUI thread
+    // for seconds (which makes the OS show its "not responding" dialog).
+    bool            m_starting_up { false };
+    BBLSplashScreen* m_startup_splash { nullptr };
+    // Detached watchdog never touches wx objects; it only logs a warning if
+    // startup has not completed after a threshold.
+    std::shared_ptr<std::atomic<bool>> m_startup_watchdog_active;
+    std::thread     m_log_cleanup_thread;
+    void            pump_startup_ui(const wxString& phase);
     bool            m_app_conf_exists{ false };
     EAppMode        m_app_mode{ EAppMode::Editor };
     bool            m_is_recreating_gui{ false };
@@ -382,6 +395,8 @@ private:
     bool             m_side_popup_status{false};
     bool             m_show_error_msgdlg{false};
     wxString         m_info_dialog_content;
+    // Deferred TLS certificate prompt (was shown before the splash).
+    wxString         m_tls_init_warning;
     wxString         m_install_preset_fail_text;
     HttpServer       m_http_server;
 #if !BBL_RELEASE_TO_PUBLIC

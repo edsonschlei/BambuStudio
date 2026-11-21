@@ -201,6 +201,14 @@ private:
     wxWebView  *m_browserML { nullptr };               //MakerLab
     wxWebView  *m_browserWiki { nullptr };
 
+    // Hidden WebViews are created on first use to keep startup light. m_browser
+    // (Home) and m_browserLeft are eager because they are visible from the start.
+    wxWebView* ensure_left_menu();
+    wxWebView* ensure_makerworld();
+    wxWebView* ensure_makerlab();
+    wxWebView* ensure_print_history();
+    wxWebView* ensure_wiki();
+
     //Basic Browser
     wxBoxSizer *bSizer_toolbar { nullptr };
     wxButton *  m_button_back { nullptr };
