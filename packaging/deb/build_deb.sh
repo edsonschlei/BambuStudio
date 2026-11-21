@@ -90,16 +90,23 @@ command -v dpkg-shlibdeps >/dev/null || die "dpkg-dev is required"
 # (WORK/build) instead of the caller's cwd, so find_package(OpenMeshCraft)
 # fails even though the dependency was installed into WORK/deps-destdir.
 # DESTDIR values below are derived from WORK and need the same treatment.
+# Do NOT use `cd "$WORK" && pwd` here: WORK typically does not exist yet, and
+# the failed assignment leaves it empty, making a fallback produce just "$PWD/".
+case "$WORK" in
+    "~"|"~/"*) WORK="$HOME${WORK#\~}" ;;
+esac
 case "$WORK" in
     /*) ;;
-    *)  WORK="$(cd -- "$WORK" 2>/dev/null && pwd)" || WORK="$PWD/$WORK" ;;
+    *)  WORK="$PWD/$WORK" ;;
 esac
 
 if ((CLEAN)); then
     log "Cleaning $WORK"
     rm -rf "$WORK"
 fi
+# Create the whole path (including missing parents) before canonicalising it.
 mkdir -p "$WORK"
+WORK="$(cd -- "$WORK" && pwd -P)"
 
 if ((SKIP_CHECKS)); then
     log "Skipping memory/disk preflight checks"
