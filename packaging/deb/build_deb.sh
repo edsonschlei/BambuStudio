@@ -85,6 +85,16 @@ command -v readelf >/dev/null || die "binutils (readelf) is required"
 command -v dpkg-deb >/dev/null || die "dpkg-deb is required"
 command -v dpkg-shlibdeps >/dev/null || die "dpkg-dev is required"
 
+# Normalize WORK to an absolute path. CMake stores CMAKE_PREFIX_PATH in its
+# cache; a relative value would be resolved against the build directory
+# (WORK/build) instead of the caller's cwd, so find_package(OpenMeshCraft)
+# fails even though the dependency was installed into WORK/deps-destdir.
+# DESTDIR values below are derived from WORK and need the same treatment.
+case "$WORK" in
+    /*) ;;
+    *)  WORK="$(cd -- "$WORK" 2>/dev/null && pwd)" || WORK="$PWD/$WORK" ;;
+esac
+
 if ((CLEAN)); then
     log "Cleaning $WORK"
     rm -rf "$WORK"
