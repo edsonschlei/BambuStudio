@@ -69,7 +69,6 @@ class wxGLCanvas;
 // BBS
 class Notebook;
 struct wxLanguageInfo;
-class BBLSplashScreen;
 
 namespace Slic3r {
 
@@ -87,6 +86,7 @@ class TaskManager;
 
 namespace GUI{
 
+class BBLSplashScreen;
 class RemovableDriveManager;
 class OtherInstanceMessageHandler;
 class MainFrame;

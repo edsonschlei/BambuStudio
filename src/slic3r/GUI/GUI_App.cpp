@@ -62,7 +62,7 @@
 #include <wx/richmsgdlg.h>
 #include <wx/log.h>
 #include <wx/intl.h>
-#include <wx/eventloop.h>
+#include <wx/evtloop.h>
 
 #include <wx/dialog.h>
 #include <wx/textctrl.h>
@@ -3570,7 +3570,7 @@ bool GUI_App::on_init_inner()
         BOOST_LOG_TRIVIAL(info) << "begin to show the splash screen...";
         //BBS use BBL splashScreen
         scrn = new BBLSplashScreen(bmp, wxSPLASH_CENTRE_ON_SCREEN, 0, splashscreen_pos);
-        m_startup_splash = scrn;
+        m_startup_splash = scrn.get();
         // The splash can be dismissed by the platform; keep the member in sync so
         // post_init() never dereferences a destroyed window.
         scrn->Bind(wxEVT_DESTROY, [this](wxWindowDestroyEvent&) { m_startup_splash = nullptr; });
